@@ -26,12 +26,19 @@ fn main() {
             get_folder_type(&entry.path()).map_err(|err| println!("{:?}: {:?}", entry.path(), err))
         {
             match folder_type {
-                FolderType::Movie(file_name) => process_movie(&entry.path(), &file_name),
-                FolderType::Show(file_names) => process_show(&entry.path(), &file_names),
-                FolderType::ShowWithSeasons => process_show_with_seasons(&entry.path()),
-            }
-            .map_err(|err| println!("{:?}: {:?}", entry.path(), err))
-            .ok();
+                FolderType::Movie(file_name) => process_movie(&entry.path(), &file_name)
+                    .map_err(|err| println!("{:?}: {:?}", entry.path(), err))
+                    .ok(),
+                FolderType::Show(file_names) => process_show(&entry.path(), &file_names)
+                    .map_err(|err| println!("{:?}: {:?}", entry.path(), err))
+                    .ok(),
+                FolderType::ShowWithSeasons => process_show_with_seasons(&entry.path())
+                    .map_err(|errs| {
+                        errs.iter()
+                            .for_each(|err| println!("{:?}: {:?}", entry.path(), err))
+                    })
+                    .ok(),
+            };
         };
     }
 }
@@ -42,7 +49,7 @@ enum ProcessingError {
     NoSubFolderFoundForMovie,
     NoSubFolderFoundForShow,
     NoSubFileFoundForMovie,
-    NoSubFileFoundForShow,
+    NoSubFileFoundForShow(String),
     FailedToCopySubFile(String),
     SubFolderForShowWithUnknownName(String),
 }
@@ -59,7 +66,8 @@ fn process_movie(path: &Path, file_name: &String) -> Result<(), ProcessingError>
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.file_name().to_str().unwrap() == "subs" && entry.file_type().unwrap().is_dir()
+            entry.file_name().to_str().unwrap().to_lowercase() == "subs"
+                && entry.file_type().unwrap().is_dir()
         })
         .next();
     match sub_folder {
@@ -96,7 +104,8 @@ fn process_show(path: &Path, file_names: &Vec<String>) -> Result<(), ProcessingE
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.file_type().unwrap().is_dir() && entry.file_name().to_str().unwrap() == "subs"
+            entry.file_type().unwrap().is_dir()
+                && entry.file_name().to_str().unwrap().to_lowercase() == "subs"
         })
         .next();
     match subs_folder {
@@ -126,7 +135,11 @@ fn process_show(path: &Path, file_names: &Vec<String>) -> Result<(), ProcessingE
                         Err(err) => return Err(err),
                         _ => {}
                     },
-                    None => return Err(ProcessingError::NoSubFileFoundForShow),
+                    None => {
+                        return Err(ProcessingError::NoSubFileFoundForShow(
+                            entry.path().to_string_lossy().to_string(),
+                        ))
+                    }
                 }
             }
             Ok(())
@@ -135,7 +148,8 @@ fn process_show(path: &Path, file_names: &Vec<String>) -> Result<(), ProcessingE
     }
 }
 
-fn process_show_with_seasons(path: &Path) -> Result<(), ProcessingError> {
+fn process_show_with_seasons(path: &Path) -> Result<(), Vec<ProcessingError>> {
+    let mut errors = vec![];
     let season_folders = fs::read_dir(path)
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -154,9 +168,15 @@ fn process_show_with_seasons(path: &Path) -> Result<(), ProcessingError> {
             })
             .map(|entry| remove_file_extension(entry.file_name().to_string_lossy().to_string()))
             .collect::<Vec<_>>();
-        process_show(&folder, &video_file_names)?;
+        if let Err(err) = process_show(&folder, &video_file_names) {
+            errors.push(err);
+        }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 fn get_folder_type(path: &Path) -> Result<FolderType, ProcessingError> {
@@ -181,7 +201,7 @@ fn get_folder_type(path: &Path) -> Result<FolderType, ProcessingError> {
                 .iter()
                 .filter(|entry| {
                     entry.file_type().unwrap().is_dir()
-                        && entry.file_name().to_str().unwrap() != "subs"
+                        && entry.file_name().to_str().unwrap().to_lowercase() != "subs"
                 })
                 .count()
                 > 0
